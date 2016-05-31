@@ -189,7 +189,7 @@ func ExecuteSQLQuery(db *sql.DB, query string) error {
 // (or an array of valid objects all with the same keys),
 // where the keys are column names and the
 // the values are SQL values to be inserted into those columns.
-func SQLInsertData(db *sql.DB, d data.JSON, tableName string, onDupKeyUpdate bool, onDupKeyFields []string, batchSize int) error {
+func SQLInsertData(db *sql.DB, d data.JSON, tableName string, onDupKeyUpdate bool, onDupKeyFields []string, onDupKeyLogic string, batchSize int) error {
 	objects, err := data.ObjectsFromJSON(d)
 	if err != nil {
 		return err
@@ -201,20 +201,20 @@ func SQLInsertData(db *sql.DB, d data.JSON, tableName string, onDupKeyUpdate boo
 			if maxIndex > len(objects) {
 				maxIndex = len(objects)
 			}
-			err = insertObjects(db, objects[i:maxIndex], tableName, onDupKeyUpdate, onDupKeyFields)
+			err = insertObjects(db, objects[i:maxIndex], tableName, onDupKeyUpdate, onDupKeyFields, onDupKeyLogic)
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	} else {
-		return insertObjects(db, objects, tableName, onDupKeyUpdate, onDupKeyFields)
+		return insertObjects(db, objects, tableName, onDupKeyUpdate, onDupKeyFields, onDupKeyLogic)
 	}
 }
 
-func insertObjects(db *sql.DB, objects []map[string]interface{}, tableName string, onDupKeyUpdate bool, onDupKeyFields []string) error {
+func insertObjects(db *sql.DB, objects []map[string]interface{}, tableName string, onDupKeyUpdate bool, onDupKeyFields []string, onDupKeyLogic string) error {
 	logger.Info("SQLInsertData: building INSERT for len(objects) =", len(objects))
-	insertSQL, vals := buildInsertSQL(objects, tableName, onDupKeyUpdate, onDupKeyFields)
+	insertSQL, vals := buildInsertSQL(objects, tableName, onDupKeyUpdate, onDupKeyFields, onDupKeyLogic)
 
 	logger.Debug("SQLInsertData:", insertSQL)
 	logger.Debug("SQLInsertData: values", vals)
@@ -243,7 +243,7 @@ func insertObjects(db *sql.DB, objects []map[string]interface{}, tableName strin
 	return nil
 }
 
-func buildInsertSQL(objects []map[string]interface{}, tableName string, onDupKeyUpdate bool, onDupKeyFields []string) (insertSQL string, vals []interface{}) {
+func buildInsertSQL(objects []map[string]interface{}, tableName string, onDupKeyUpdate bool, onDupKeyFields []string, onDupKeyLogic string) (insertSQL string, vals []interface{}) {
 	cols := sortedColumns(objects)
 
 	// Format: INSERT INTO tablename(col1,col2) VALUES(?,?),(?,?)
@@ -267,19 +267,16 @@ func buildInsertSQL(objects []map[string]interface{}, tableName string, onDupKey
 	}
 
 	if onDupKeyUpdate {
-		// format: ON DUPLICATE KEY UPDATE a=VALUES(a), b=VALUES(b), c=VALUES(c)
-		insertSQL += " ON DUPLICATE KEY UPDATE "
-
 		// If this wasn't explicitly set, we want to update all columns
 		if len(onDupKeyFields) == 0 {
 			onDupKeyFields = cols
 		}
 
-		for i, c := range onDupKeyFields {
-			if i > 0 {
-				insertSQL += ","
-			}
-			insertSQL += "`" + c + "`=VALUES(`" + c + "`)"
+		switch strings.ToLower(onDupKeyLogic) {
+		case "postgres":
+			insertSQL += postgresOnDupKey(onDupKeyFields)
+		default:
+			insertSQL += mysqlOnDupKey(onDupKeyFields)
 		}
 	}
 
@@ -314,4 +311,23 @@ func sortedColumns(objects []map[string]interface{}) []string {
 	}
 	sort.Strings(cols)
 	return cols
+}
+
+func mysqlOnDupKey(onDupKeyFields []string) string {
+	// format: ON DUPLICATE KEY UPDATE a=VALUES(a), b=VALUES(b), c=VALUES(c)
+	insertSQL := " ON DUPLICATE KEY UPDATE "
+
+	for i, c := range onDupKeyFields {
+		if i > 0 {
+			insertSQL += ","
+		}
+		insertSQL += "`" + c + "`=VALUES(`" + c + "`)"
+	}
+
+	return insertSQL
+}
+
+// TODO: Implement this functionality based on PostgreSQL's ON CONFLICT
+func postgresOnDupKey(onDupKeyFields []string) string {
+	return ""
 }
